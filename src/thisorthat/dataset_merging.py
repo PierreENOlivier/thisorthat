@@ -1,11 +1,19 @@
 import pandas as pd
 from pathlib import Path
+
+from openpyxl.chart import reference
+
 from thisorthat.utils import get_project_root
+from functools import reduce
 
 ROOT = get_project_root()
 print(ROOT)
 
-# REPO_ROOT = Path(__file__)
+IUCN_STATUS_ORDER = []
+
+NCHAR_AVIBASE_SHORT = len("A20878F0")
+
+NCHAR_AVIBASE_LONG = len("A20878F0EBC3724F")
 
 COLUMN_MAPPINGS = {
     'AVONET': {
@@ -17,6 +25,12 @@ COLUMN_MAPPINGS = {
             'Tail.Length': 'tail_length_mm',
             'Mass': 'body_mass_gr'
 
+        },
+        'col_types': {
+            'beak_length_mm': 'float64',
+            'wing_length_mm': 'float64',
+            'tail_length_mm': 'float64',
+            'body_mass_gr': 'float64',
         },
         'transform': {
         },
@@ -32,7 +46,71 @@ COLUMN_MAPPINGS = {
     },
     'BIRDBASE': {
         'rename': {
-            'avibase_id': 'avibase_id'
+            'Order': 'order',
+            'Family AviList v1 2025': 'family',
+            'Average Mass': 'avg_body_mass',
+            'Clutch_Max': 'max_clutch_size',
+            'NormMax': 'highest_elevation',
+            'Incu1': 'shortest_incubation',
+            'Incu2': 'longest_incubation',
+            'Fldg1': 'shortest_fledging',
+            'Fldg2': 'longest_fledging'
+        },
+        'col_types': {
+            'avg_body_mass': 'float64',
+            'max_clutch_size': 'int64',
+            'highest_elevation': 'int64',
+            'shortest_incubation': 'int64',
+            'longest_incubation': 'int64',
+            'shortest_fledging': 'int64',
+            'longest_fledging': 'int64',
+        },
+        'transform': {},
+        'col_keep': [
+            'order',
+            'family',
+            'scientific_name',
+            'avg_body_mass',
+            'max_clutch_size',
+            'highest_elevation',
+            'shortest_incubation',
+            'longest_incubation',
+            'shortest_fledging',
+            'longest_fledging'
+        ],
+    },
+    'AVILIST': {
+        'rename': {
+            'ORDER': 'order',
+            'FAMILY': 'family',
+            'SCIENTIFIC NAME': 'scientific_name',
+            'ENGLISH NAME: AVILIST': 'common_name',
+            'IUCN RED LIST CATEGORY': 'red_list',
+            'BIRDLIFE DATAZONE URL': 'datazone_url',
+            'BIRDS OF THE WORLD URL': 'birdworld_url',
+            'AVIBASE ID': 'avibase_id',
+        },
+        'col_types': {},
+        'transform': {},
+        'col_keep': [
+            'avibase_id',
+            'order',
+            'family',
+            'scientific_name',
+            'common_name',
+            'red_list',
+            'datazone_url',
+            'birdworld_url'
+        ]
+
+    },
+    'BIRDNET': {
+        'rename': {
+            'avibase_id': 'avibase_id',
+            'commonness': 'commonness',
+        },
+        'col_types': {
+            'commonness': 'float64',
         },
         'transform': {},
         'col_keep': [
@@ -48,27 +126,6 @@ COLUMN_MAPPINGS = {
             'image_url'
         ],
     },
-    'AVILIST': {
-        'rename': {
-            'ORDER': 'order',
-            'FAMILY': 'family',
-            'SCIENTIFIC NAME': 'scientific_name',
-            'ENGLISH NAME: AVILIST': 'common_name',
-            'IUCN RED LIST CATEGORY': 'red_list',
-            'BIRDLIFE DATAZONE URL': 'datazone_url',
-            'AVIBASE ID': 'avibase_id',
-        },
-        'transform': {},
-        'col_keep': [
-            'avibase_id',
-            'order',
-            'family',
-            'scientific_name',
-            'red_list',
-            'datazone_url'
-        ]
-
-    },
 }
 
 def load_avonet(dataset):
@@ -76,13 +133,38 @@ def load_avonet(dataset):
 
     data = pd.read_excel(
         io=ROOT / dataset.file_path,
-        sheet_name='AVONET1_BirdLife',
+        sheet_name='AVONET1_BirdLife'
     )
 
     data = data.rename(columns=col_mapping['rename'])
-    return data.loc[, col_mapping['col_keep']].copy()
+
+    # Extract Avibase ID
+    data['avibase_id'] = data['avibase_id'].astype("string").str[-NCHAR_AVIBASE_SHORT:]
+
+    data = format_type_columns(data, col_mapping['col_types'])
+    return data.loc[:, col_mapping['col_keep']].copy()
 
 def load_birdbase(dataset):
+    col_mapping = COLUMN_MAPPINGS[dataset.name_database.upper()]
+
+    data = pd.read_excel(
+        io=ROOT / dataset.file_path,
+        sheet_name='Data',
+        header=1
+    )
+
+    data["scientific_name"] = (
+        data["Genus"].astype("string")
+        + " "
+        + data["Species"].astype("string")
+    )
+
+    data = data.rename(columns=col_mapping['rename'])
+    data = data.loc[:, col_mapping['col_keep']].copy()
+    data = format_type_columns(data, col_mapping['col_types'])
+    return data.loc[:, col_mapping['col_keep']].copy()
+
+def load_birdnet(dataset):
     col_mapping = COLUMN_MAPPINGS[dataset.name_database.upper()]
 
     data = pd.read_csv(
@@ -92,10 +174,12 @@ def load_birdbase(dataset):
     )
 
     data = data.rename(columns=col_mapping['rename'])
+    data['avibase_id'] = data['avibase_id'].astype("string").str[:NCHAR_AVIBASE_SHORT]
+
     data.dropna(subset=['image_url'], inplace=True)
+    data = format_type_columns(data, col_mapping['col_types'])
+    return  data.loc[data['record_type'] == 'species', col_mapping['col_keep']].copy()
 
-
-    return data = data.loc[data['record_type'] == 'species'].copy()
 
 def load_avilist(dataset):
     col_mapping = COLUMN_MAPPINGS[dataset.name_database.upper()]
@@ -106,12 +190,14 @@ def load_avilist(dataset):
     )
     data = data.rename(columns=col_mapping['rename'])
     data['avibase_id'] = data['avibase_id'].str.split('-', expand=True)[1]
+    data = format_type_columns(data, col_mapping['col_types'])
     return data.loc[data['RANK'].eq('species'), col_mapping['col_keep']].copy()
 
 LOADER_REGISTRY = {
     'AVONET': load_avonet,
     'BIRDBASE': load_birdbase,
-    'AVILIST': load_avilist
+    'AVILIST': load_avilist,
+    'BIRDNET': load_birdnet
 
 }
 
@@ -146,13 +232,25 @@ class Dataset:
         # pd.merge
 
 class ConsolidatedDataset:
+    VALID_CATEGORIES = {"bird", "fish"}
+
     def __init__(
             self,
             merged_dataset,
-            source_datasets=None
+            source_datasets=None,
+            category=None,
     ):
         self.merged_dataset = merged_dataset
         self.source_datasets = source_datasets or []
+
+        category = category.strip().lower()
+        if category not in self.VALID_CATEGORIES:
+            raise ValueError(
+                f"Invalid category {category!r}. "
+                f"Choose one of: {sorted(self.VALID_CATEGORIES)}"
+            )
+
+        self.category = category
 
     @classmethod
     def merge_datasets(
@@ -160,6 +258,7 @@ class ConsolidatedDataset:
             ref_dataset,
             other_sources,
             on,
+            category=None,
             how="outer"
     ):
         if not ref_dataset:
@@ -175,6 +274,74 @@ class ConsolidatedDataset:
                     f"instead got {type(dataset).__name__}"
                 )
 
+        dataset_list = other_sources.insert(0, ref_dataset)
+
+        # merged = reduce(
+        #     lamdba left, right:
+        #         left.
+        # )
+
+        # return cls(
+            # merged_dataset=merged,
+            # source_datasets=[ref_dataset, *other_sources],
+            # category=category
+        # )
+
+# Taxonomy Resolution
+class TaxonomyResolver:
+    def __init__(self, reference_dataset):
+        self.reference_dataset = reference_dataset
+
+    def add_avibase_id(self, data):
+        reference = self.reference_dataset[
+            ["avibase_id", "scientific_name"]
+        ].copy()
+
+        reference['merge_key'] = normalize_species_name(
+            reference['scientific_name'],
+        )
+
+        result = data.copy()
+        result['merge_key'] = normalize_species_name(
+            result['scientific_name'],
+        )
+
+        return result.merge(
+            reference[["merge_key", "avibase_id"]],
+            on="merge_key",
+            how="left",
+        )
+
+    @classmethod
+    def from_file(
+            cls,
+            file_path
+    ):
+        """
+        Load a reference taxonomy to resolve species
+        :param file_path:
+        :return:
+        """
+        # Unsure what is a good reference
+        # Need reference with synonyms
+        pass
+
+def normalize_species_name(series):
+    return (
+        series.astype("string")
+        .str.normalize("NFKC")
+        .str.strip()
+        .str.replace(r"\s+", " ", regex=True)
+        .str.casefold()
+    )
+
+# Helpers
+def format_type_columns(
+        dataset,
+        type_mapping:dict
+):
+    return dataset.astype(type_mapping)
+
 def complete_dataset(dataset):
     """
     Keep only observations that have complete
@@ -183,6 +350,8 @@ def complete_dataset(dataset):
     # Should it be a function or a method?
     # Functions need to filter by tag, maybe add a tag to object and add it as a column
     pass
+
+
 
 avilist = Dataset(
     name_database='avilist',
@@ -209,3 +378,19 @@ birdbase = Dataset(
 )
 
 birdbase.load_data()
+
+birdnet = Dataset(
+    name_database='birdnet',
+    source='https://birdnet.cornell.edu/taxonomy/download',
+    file_path='data/raw/birdnet_taxonomy_0.4-Oct2026.csv'
+)
+
+birdnet.load_data()
+
+
+
+ConsolidatedDataset.merge_datasets(
+    avilist,
+    [birdnet, avonet, birdbase],
+    category="bird"
+)
